@@ -67,14 +67,16 @@ def main():
     # Load ControlNet model (using Canny edge detection for text embedding)
     controlnet = ControlNetModel.from_pretrained(
         "lllyasviel/sd-controlnet-canny",
-        torch_dtype=torch_dtype
+        torch_dtype=torch_dtype,
+        use_safetensors=True
     )
     
     # Load Stable Diffusion model
     pipe = StableDiffusionControlNetPipeline.from_pretrained(
         "runwayml/stable-diffusion-v1-5",
         controlnet=controlnet,
-        torch_dtype=torch_dtype
+        torch_dtype=torch_dtype,
+        use_safetensors=True
     )
     
     pipe = pipe.to(device)
