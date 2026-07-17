@@ -6,21 +6,28 @@ from PIL import ImageFont
 # Font paths tried in order, first match wins. Each entry is (path, index).
 DEFAULT_FONT_CANDIDATES = (
     ("/System/Library/Fonts/Helvetica.ttc", 1),  # macOS bold variant
-    ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),  # Linux bold
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),  # Debian/Ubuntu
+    ("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", 0),  # Fedora/others
+    ("C:\\Windows\\Fonts\\arialbd.ttf", 0),  # Windows
+    ("DejaVuSans-Bold.ttf", 0),  # bundled with Pillow
 )
 
 
 def load_font(font_size, candidates=DEFAULT_FONT_CANDIDATES):
-    """Load the first available font from ``candidates``.
+    """Load the first available scalable font from ``candidates``.
 
-    Falls back to Pillow's default font if none of the candidates can be loaded.
+    Raises if none can be loaded, because Pillow's default bitmap font ignores
+    ``font_size`` and produces an unusably tiny mask.
     """
     for path, index in candidates:
         try:
             return ImageFont.truetype(path, font_size, index=index)
         except OSError:
             continue
-    return ImageFont.load_default()
+    raise RuntimeError(
+        "Could not load a scalable TrueType font. Install DejaVu "
+        "(e.g. `apt-get install fonts-dejavu`) or provide a font available on this system."
+    )
 
 
 def save_image(image, filename, label="Image"):
