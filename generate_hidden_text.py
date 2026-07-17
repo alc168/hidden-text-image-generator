@@ -10,72 +10,37 @@ import sys
 
 import torch
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from controlnet_aux import CannyDetector
+
+from utils import get_device_and_dtype, load_font, save_image
 
 
 logger = logging.getLogger(__name__)
-
-
-def load_font(font_size):
-    """Load a bold TrueType font, falling back to alternatives.
-
-    Each candidate is tried in order; the specific font-loading error is logged
-    so that a fallback is never silent. If no TrueType font can be loaded, PIL's
-    built-in bitmap font is used as a last resort (with a warning, since it
-    ignores ``font_size`` and produces poor text masks).
-    """
-    candidates = [
-        # (path, index) - index selects a face within a font collection.
-        ("/System/Library/Fonts/Helvetica.ttc", 1),  # Bold variant (macOS)
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),  # Linux
-    ]
-
-    for path, index in candidates:
-        try:
-            return ImageFont.truetype(path, font_size, index=index)
-        except OSError as exc:
-            logger.warning("Could not load font '%s': %s", path, exc)
-
-    logger.warning(
-        "No TrueType font available; falling back to PIL's default bitmap font. "
-        "The hidden text will be low quality because font_size (%s) is ignored.",
-        font_size,
-    )
-    return ImageFont.load_default()
 
 
 def create_text_mask(text, size=(512, 512), font_size=120):
     """Create a black text on white background mask."""
     img = Image.new('RGB', size, color='white')
     draw = ImageDraw.Draw(img)
-    
+
     # Convert to uppercase for better visibility
     text = text.upper()
-    
+
     font = load_font(font_size)
-    
+
     # Calculate text position to center it
     bbox = draw.textbbox((0, 0), text, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
-    
+
     x = (size[0] - text_width) // 2
     y = (size[1] - text_height) // 2
-    
+
     # Draw text in black with stroke for thickness
     draw.text((x, y), text, font=font, fill='black', stroke_width=3, stroke_fill='black')
-    
+
     return img
-
-
-def save_image(image, filename):
-    """Save a PIL image, raising a clear error if the write fails."""
-    try:
-        image.save(filename)
-    except OSError as exc:
-        raise OSError(f"Failed to save image '{filename}': {exc}") from exc
-    logger.info("Saved %s", filename)
 
 
 def main():
@@ -84,21 +49,18 @@ def main():
     image_size = (512, 512)
     prompt = "beautiful mountain landscape, majestic peaks, scenic view, high quality, detailed, photorealistic"
     negative_prompt = "blurry, low quality, distorted, ugly, bad anatomy"
-    
+
     # ControlNet strength (lower = more subtle)
     controlnet_conditioning_scale = 0.8
     guidance_scale = 7.5
     num_inference_steps = 40
-    
+
     logger.info("Loading models...")
-    
-    # Move to GPU if available
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Move to GPU if available, using float16 on GPU and float32 on CPU
+    device, torch_dtype = get_device_and_dtype()
     logger.info("Using device: %s", device)
-    
-    # Use float16 only on GPU, float32 on CPU
-    torch_dtype = torch.float16 if device == "cuda" else torch.float32
-    
+
     # Load ControlNet + Stable Diffusion models. Downloading/loading these can
     # fail for many reasons (no network, out of disk, corrupt cache); surface a
     # clear, actionable error instead of a raw stack trace deep in diffusers.
@@ -119,28 +81,28 @@ def main():
             "network connection, available disk space, and the Hugging Face "
             "model cache."
         ) from exc
-    
+
     pipe = pipe.to(device)
-    
+
     # Enable memory optimizations for CPU
     if device == "cpu":
         pipe.enable_attention_slicing()
-    
+
     logger.info("Creating text mask...")
     # Create text mask
     text_mask = create_text_mask(text, size=image_size)
-    save_image(text_mask, "text_mask.png")
-    
+    save_image(text_mask, "text_mask.png", label="Text mask")
+
     logger.info("Processing with ControlNet...")
     # Use Canny detector to get edges from text mask
     canny = CannyDetector()
     control_image = canny(text_mask, low_threshold=50, high_threshold=100)
-    save_image(control_image, "control_image.png")
-    
+    save_image(control_image, "control_image.png", label="Control image")
+
     logger.info("Generating image...")
     # Generate the image
     generator = torch.Generator(device).manual_seed(42)  # For reproducibility
-    
+
     output = pipe(
         prompt=prompt,
         negative_prompt=negative_prompt,
@@ -152,19 +114,19 @@ def main():
         height=image_size[1],
         width=image_size[0]
     )
-    
+
     if not output.images:
         raise RuntimeError("Pipeline returned no images; generation failed.")
-    
+
     # Save the result
     output_image = output.images[0]
-    save_image(output_image, "jeremy_hidden_landscape.png")
-    
+    save_image(output_image, "jeremy_hidden_landscape.png", label="Image")
+
     # Also save a smaller version to test visibility
     small_size = (128, 128)
     small_image = output_image.resize(small_size, Image.Resampling.LANCZOS)
-    save_image(small_image, "jeremy_hidden_landscape_small.png")
-    
+    save_image(small_image, "jeremy_hidden_landscape_small.png", label="Small version")
+
     logger.info("Done! View the small version to see the hidden text.")
 
 
