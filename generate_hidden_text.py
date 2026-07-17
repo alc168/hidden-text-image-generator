@@ -1,79 +1,118 @@
 #!/usr/bin/env python3
 """
-Generate an image with hidden text using Stable Diffusion and ControlNet.
-The text "Jeremy" will be embedded in a mountain landscape, visible only when
-viewed at small sizes or from a distance.
+Generate an image with hidden text using Stable Diffusion and a brightness
+(QR-code-monster) ControlNet.
+
+The text is embedded as a low-frequency luminance pattern in a generated scene,
+so it stays hidden when viewed at full size but becomes visible when the image
+is shrunk or viewed from a distance / with squinted eyes.
 """
 
+import argparse
 import logging
 import sys
 
 import torch
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
 from PIL import Image, ImageDraw
-from controlnet_aux import CannyDetector
 
 from utils import get_device_and_dtype, load_font, save_image
 
 
 logger = logging.getLogger(__name__)
 
+# Model ids. runwayml/stable-diffusion-v1-5 was removed from the Hub in 2024,
+# so we use the community-maintained mirror.
+BASE_MODEL_ID = "stable-diffusion-v1-5/stable-diffusion-v1-5"
+CONTROLNET_ID = "monster-labs/control_v1p_sd15_qrcode_monster"
 
-def create_text_mask(text, size=(512, 512), font_size=120):
-    """Create a black text on white background mask."""
-    img = Image.new('RGB', size, color='white')
+
+def create_text_mask(text, size=(512, 512), font_size=180, stroke_width=6):
+    """Create a filled white-text-on-black mask for the brightness ControlNet.
+
+    Bright (white) regions steer the model toward brighter output and dark
+    regions toward darker output, which is what forms the hidden pattern.
+    """
+    img = Image.new("RGB", size, color="black")
     draw = ImageDraw.Draw(img)
 
-    # Convert to uppercase for better visibility
     text = text.upper()
-
     font = load_font(font_size)
 
-    # Calculate text position to center it
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_width = bbox[2] - bbox[0]
-    text_height = bbox[3] - bbox[1]
+    # Shrink the font until the (stroked) text fits within the image.
+    while font_size > 8:
+        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        if text_width <= size[0] and text_height <= size[1]:
+            break
+        font_size -= 8
+        font = load_font(font_size)
 
-    x = (size[0] - text_width) // 2
-    y = (size[1] - text_height) // 2
+    # Center accounting for the font's origin offset (bbox[0], bbox[1]).
+    x = (size[0] - text_width) // 2 - bbox[0]
+    y = (size[1] - text_height) // 2 - bbox[1]
 
-    # Draw text in black with stroke for thickness
-    draw.text((x, y), text, font=font, fill='black', stroke_width=3, stroke_fill='black')
+    draw.text(
+        (x, y),
+        text,
+        font=font,
+        fill="white",
+        stroke_width=stroke_width,
+        stroke_fill="white",
+    )
 
     return img
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Generate an image with hidden text using Stable Diffusion + ControlNet."
+    )
+    parser.add_argument("--text", default="Jeremy", help="Text to hide in the image.")
+    parser.add_argument("--size", type=int, default=512, help="Square image size in pixels.")
+    parser.add_argument(
+        "--prompt",
+        default="beautiful mountain landscape, majestic peaks, scenic view, high quality, detailed, photorealistic",
+        help="Scene description for the image.",
+    )
+    parser.add_argument(
+        "--negative-prompt",
+        default="blurry, low quality, distorted, ugly, bad anatomy",
+        help="Negative prompt.",
+    )
+    parser.add_argument(
+        "--controlnet-scale",
+        type=float,
+        default=1.2,
+        help="ControlNet conditioning scale (higher = more visible text).",
+    )
+    parser.add_argument("--guidance-scale", type=float, default=7.5, help="CFG guidance scale.")
+    parser.add_argument("--steps", type=int, default=40, help="Number of inference steps.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
+    parser.add_argument(
+        "--output", default="hidden_landscape.png", help="Output image filename."
+    )
+    return parser.parse_args()
+
+
 def main():
-    # Configuration
-    text = "Jeremy"
-    image_size = (512, 512)
-    prompt = "beautiful mountain landscape, majestic peaks, scenic view, high quality, detailed, photorealistic"
-    negative_prompt = "blurry, low quality, distorted, ugly, bad anatomy"
+    args = parse_args()
+    image_size = (args.size, args.size)
 
-    # ControlNet strength (lower = more subtle)
-    controlnet_conditioning_scale = 0.8
-    guidance_scale = 7.5
-    num_inference_steps = 40
-
-    logger.info("Loading models...")
-
-    # Move to GPU if available, using float16 on GPU and float32 on CPU
     device, torch_dtype = get_device_and_dtype()
     logger.info("Using device: %s", device)
 
     # Load ControlNet + Stable Diffusion models. Downloading/loading these can
     # fail for many reasons (no network, out of disk, corrupt cache); surface a
     # clear, actionable error instead of a raw stack trace deep in diffusers.
+    logger.info("Loading models...")
     try:
-        # ControlNet using Canny edge detection for text embedding.
-        controlnet = ControlNetModel.from_pretrained(
-            "lllyasviel/sd-controlnet-canny",
-            torch_dtype=torch_dtype
-        )
+        controlnet = ControlNetModel.from_pretrained(CONTROLNET_ID, torch_dtype=torch_dtype)
         pipe = StableDiffusionControlNetPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5",
+            BASE_MODEL_ID,
             controlnet=controlnet,
-            torch_dtype=torch_dtype
+            torch_dtype=torch_dtype,
         )
     except Exception as exc:
         raise RuntimeError(
@@ -84,48 +123,39 @@ def main():
 
     pipe = pipe.to(device)
 
-    # Enable memory optimizations for CPU
-    if device == "cpu":
-        pipe.enable_attention_slicing()
+    # Attention slicing lowers peak memory; useful on CPU and low-VRAM GPUs.
+    pipe.enable_attention_slicing()
 
     logger.info("Creating text mask...")
-    # Create text mask
-    text_mask = create_text_mask(text, size=image_size)
+    text_mask = create_text_mask(args.text, size=image_size)
     save_image(text_mask, "text_mask.png", label="Text mask")
 
-    logger.info("Processing with ControlNet...")
-    # Use Canny detector to get edges from text mask
-    canny = CannyDetector()
-    control_image = canny(text_mask, low_threshold=50, high_threshold=100)
-    save_image(control_image, "control_image.png", label="Control image")
-
     logger.info("Generating image...")
-    # Generate the image
-    generator = torch.Generator(device).manual_seed(42)  # For reproducibility
+    generator = torch.Generator(device=device).manual_seed(args.seed)
 
     output = pipe(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        image=control_image,
-        controlnet_conditioning_scale=controlnet_conditioning_scale,
-        guidance_scale=guidance_scale,
-        num_inference_steps=num_inference_steps,
+        prompt=args.prompt,
+        negative_prompt=args.negative_prompt,
+        image=text_mask,
+        controlnet_conditioning_scale=args.controlnet_scale,
+        guidance_scale=args.guidance_scale,
+        num_inference_steps=args.steps,
         generator=generator,
         height=image_size[1],
-        width=image_size[0]
+        width=image_size[0],
     )
 
     if not output.images:
         raise RuntimeError("Pipeline returned no images; generation failed.")
 
-    # Save the result
     output_image = output.images[0]
-    save_image(output_image, "jeremy_hidden_landscape.png", label="Image")
+    save_image(output_image, args.output, label="Image")
 
-    # Also save a smaller version to test visibility
-    small_size = (128, 128)
-    small_image = output_image.resize(small_size, Image.Resampling.LANCZOS)
-    save_image(small_image, "jeremy_hidden_landscape_small.png", label="Small version")
+    # Small version where the hidden text becomes visible.
+    small_image = output_image.resize((128, 128), Image.Resampling.LANCZOS)
+    stem = args.output.rsplit(".", 1)[0]
+    small_filename = f"{stem}_small.png"
+    save_image(small_image, small_filename, label="Small version")
 
     logger.info("Done! View the small version to see the hidden text.")
 
