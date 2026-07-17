@@ -35,28 +35,42 @@ python generate_hidden_text.py
 ```
 
 This will generate:
-- `jeremy_hidden_landscape.png` - Full-size image with hidden text
-- `jeremy_hidden_landscape_small.png` - Small version where text is visible
-- `text_mask.png` - Text mask used for ControlNet
-- `control_image.png` - Canny edge detection of text mask
+- `hidden_landscape.png` - Full-size image with hidden text
+- `hidden_landscape_small.png` - Small version where text is visible
+- `text_mask.png` - Brightness mask used for ControlNet
 
 ## Customization
 
-Edit the `main()` function in `generate_hidden_text.py` to customize:
+All options are exposed as command-line flags:
 
-- `text` - The text to hide (default: "Jeremy")
-- `image_size` - Output image dimensions (default: 512x512)
-- `prompt` - Scene description for the image
-- `controlnet_conditioning_scale` - Text visibility (0.0-1.0, higher = more visible)
-- `guidance_scale` - Image quality guidance (default: 7.5)
-- `num_inference_steps` - Generation steps (default: 40)
+```bash
+python generate_hidden_text.py \
+  --text "Jeremy" \
+  --size 512 \
+  --prompt "beautiful mountain landscape, majestic peaks" \
+  --controlnet-scale 1.2 \
+  --guidance-scale 7.5 \
+  --steps 40 \
+  --seed 42 \
+  --output hidden_landscape.png
+```
+
+Run `python generate_hidden_text.py --help` for the full list.
+
+- `--text` - The text to hide (default: "Jeremy")
+- `--size` - Square output size in pixels (default: 512)
+- `--prompt` - Scene description for the image
+- `--controlnet-scale` - Text visibility (higher = more visible; ~1.0-1.5)
+- `--guidance-scale` - Image quality guidance (default: 7.5)
+- `--steps` - Generation steps (default: 40)
+- `--seed` - Random seed for reproducibility (default: 42)
 
 ## How It Works
 
 The script uses:
 - **Stable Diffusion v1.5** - Text-to-image model
-- **ControlNet (Canny)** - Guides the image generation using text edges
-- **Low-frequency embedding** - Text is hidden in low-frequency components
+- **ControlNet (QR-code-monster / brightness)** - Modulates image luminance from a filled text mask
+- **Low-frequency embedding** - Text is hidden in low-frequency luminance components
 
 When viewing the full-size image, high-frequency details hide the text. When viewing the small version (or squinting), low-frequency components dominate and the text becomes visible.
 
