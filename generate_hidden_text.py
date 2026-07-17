@@ -5,11 +5,44 @@ The text "Jeremy" will be embedded in a mountain landscape, visible only when
 viewed at small sizes or from a distance.
 """
 
+import logging
+import sys
+
 import torch
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
 from PIL import Image, ImageDraw, ImageFont
-import numpy as np
 from controlnet_aux import CannyDetector
+
+
+logger = logging.getLogger(__name__)
+
+
+def load_font(font_size):
+    """Load a bold TrueType font, falling back to alternatives.
+
+    Each candidate is tried in order; the specific font-loading error is logged
+    so that a fallback is never silent. If no TrueType font can be loaded, PIL's
+    built-in bitmap font is used as a last resort (with a warning, since it
+    ignores ``font_size`` and produces poor text masks).
+    """
+    candidates = [
+        # (path, index) - index selects a face within a font collection.
+        ("/System/Library/Fonts/Helvetica.ttc", 1),  # Bold variant (macOS)
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),  # Linux
+    ]
+
+    for path, index in candidates:
+        try:
+            return ImageFont.truetype(path, font_size, index=index)
+        except OSError as exc:
+            logger.warning("Could not load font '%s': %s", path, exc)
+
+    logger.warning(
+        "No TrueType font available; falling back to PIL's default bitmap font. "
+        "The hidden text will be low quality because font_size (%s) is ignored.",
+        font_size,
+    )
+    return ImageFont.load_default()
 
 
 def create_text_mask(text, size=(512, 512), font_size=120):
@@ -20,14 +53,7 @@ def create_text_mask(text, size=(512, 512), font_size=120):
     # Convert to uppercase for better visibility
     text = text.upper()
     
-    # Try to use a bold font, fall back to default if not available
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size, index=1)  # Bold variant
-    except:
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except:
-            font = ImageFont.load_default()
+    font = load_font(font_size)
     
     # Calculate text position to center it
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -43,6 +69,15 @@ def create_text_mask(text, size=(512, 512), font_size=120):
     return img
 
 
+def save_image(image, filename):
+    """Save a PIL image, raising a clear error if the write fails."""
+    try:
+        image.save(filename)
+    except OSError as exc:
+        raise OSError(f"Failed to save image '{filename}': {exc}") from exc
+    logger.info("Saved %s", filename)
+
+
 def main():
     # Configuration
     text = "Jeremy"
@@ -55,27 +90,35 @@ def main():
     guidance_scale = 7.5
     num_inference_steps = 40
     
-    print("Loading models...")
+    logger.info("Loading models...")
     
     # Move to GPU if available
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    logger.info("Using device: %s", device)
     
     # Use float16 only on GPU, float32 on CPU
     torch_dtype = torch.float16 if device == "cuda" else torch.float32
     
-    # Load ControlNet model (using Canny edge detection for text embedding)
-    controlnet = ControlNetModel.from_pretrained(
-        "lllyasviel/sd-controlnet-canny",
-        torch_dtype=torch_dtype
-    )
-    
-    # Load Stable Diffusion model
-    pipe = StableDiffusionControlNetPipeline.from_pretrained(
-        "runwayml/stable-diffusion-v1-5",
-        controlnet=controlnet,
-        torch_dtype=torch_dtype
-    )
+    # Load ControlNet + Stable Diffusion models. Downloading/loading these can
+    # fail for many reasons (no network, out of disk, corrupt cache); surface a
+    # clear, actionable error instead of a raw stack trace deep in diffusers.
+    try:
+        # ControlNet using Canny edge detection for text embedding.
+        controlnet = ControlNetModel.from_pretrained(
+            "lllyasviel/sd-controlnet-canny",
+            torch_dtype=torch_dtype
+        )
+        pipe = StableDiffusionControlNetPipeline.from_pretrained(
+            "runwayml/stable-diffusion-v1-5",
+            controlnet=controlnet,
+            torch_dtype=torch_dtype
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to load the ControlNet/Stable Diffusion models. Check your "
+            "network connection, available disk space, and the Hugging Face "
+            "model cache."
+        ) from exc
     
     pipe = pipe.to(device)
     
@@ -83,20 +126,18 @@ def main():
     if device == "cpu":
         pipe.enable_attention_slicing()
     
-    print("Creating text mask...")
+    logger.info("Creating text mask...")
     # Create text mask
     text_mask = create_text_mask(text, size=image_size)
-    text_mask.save("text_mask.png")
-    print("Text mask saved as text_mask.png")
+    save_image(text_mask, "text_mask.png")
     
-    print("Processing with ControlNet...")
+    logger.info("Processing with ControlNet...")
     # Use Canny detector to get edges from text mask
     canny = CannyDetector()
     control_image = canny(text_mask, low_threshold=50, high_threshold=100)
-    control_image.save("control_image.png")
-    print("Control image saved as control_image.png")
+    save_image(control_image, "control_image.png")
     
-    print("Generating image...")
+    logger.info("Generating image...")
     # Generate the image
     generator = torch.Generator(device).manual_seed(42)  # For reproducibility
     
@@ -112,21 +153,33 @@ def main():
         width=image_size[0]
     )
     
+    if not output.images:
+        raise RuntimeError("Pipeline returned no images; generation failed.")
+    
     # Save the result
     output_image = output.images[0]
-    output_filename = "jeremy_hidden_landscape.png"
-    output_image.save(output_filename)
-    print(f"Image saved as {output_filename}")
+    save_image(output_image, "jeremy_hidden_landscape.png")
     
     # Also save a smaller version to test visibility
     small_size = (128, 128)
     small_image = output_image.resize(small_size, Image.Resampling.LANCZOS)
-    small_filename = "jeremy_hidden_landscape_small.png"
-    small_image.save(small_filename)
-    print(f"Small version saved as {small_filename}")
+    save_image(small_image, "jeremy_hidden_landscape_small.png")
     
-    print("\nDone! View the small version to see the hidden text.")
+    logger.info("Done! View the small version to see the hidden text.")
 
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.error("Interrupted by user.")
+        sys.exit(130)
+    except Exception:
+        # Log the full traceback and exit non-zero so failures propagate to the
+        # caller / shell instead of being masked by a zero exit status.
+        logger.exception("Image generation failed.")
+        sys.exit(1)
