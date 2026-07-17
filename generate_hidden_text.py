@@ -13,40 +13,15 @@ import sys
 
 import torch
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
+
+from utils import get_device_and_dtype, load_font, save_image
 
 
 # Model ids. runwayml/stable-diffusion-v1-5 was removed from the Hub in 2024,
 # so we use the community-maintained mirror.
 BASE_MODEL_ID = "stable-diffusion-v1-5/stable-diffusion-v1-5"
 CONTROLNET_ID = "monster-labs/control_v1p_sd15_qrcode_monster"
-
-# Candidate bold fonts, tried in order across macOS / Linux / Windows.
-FONT_CANDIDATES = [
-    ("/System/Library/Fonts/Helvetica.ttc", 1),  # macOS bold variant
-    ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),  # Debian/Ubuntu
-    ("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf", 0),  # Fedora/others
-    ("C:\\Windows\\Fonts\\arialbd.ttf", 0),  # Windows
-    ("DejaVuSans-Bold.ttf", 0),  # bundled with Pillow
-]
-
-
-def load_font(font_size):
-    """Load a bold TrueType font at the requested size.
-
-    Falls back through several well-known system paths and finally to the font
-    bundled with Pillow. Raises if no scalable font can be loaded, because the
-    default bitmap font ignores ``font_size`` and produces an unusable mask.
-    """
-    for path, index in FONT_CANDIDATES:
-        try:
-            return ImageFont.truetype(path, font_size, index=index)
-        except OSError:
-            continue
-    raise RuntimeError(
-        "Could not load a scalable TrueType font. Install DejaVu "
-        "(e.g. `apt-get install fonts-dejavu`) or pass a font available on this system."
-    )
 
 
 def create_text_mask(text, size=(512, 512), font_size=180, stroke_width=6):
@@ -122,11 +97,8 @@ def main():
     args = parse_args()
     image_size = (args.size, args.size)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device, torch_dtype = get_device_and_dtype()
     print(f"Using device: {device}")
-
-    # float16 only helps on GPU; CPU requires float32.
-    torch_dtype = torch.float16 if device == "cuda" else torch.float32
 
     print("Loading models...")
     controlnet = ControlNetModel.from_pretrained(CONTROLNET_ID, torch_dtype=torch_dtype)
@@ -142,8 +114,7 @@ def main():
 
     print("Creating text mask...")
     text_mask = create_text_mask(args.text, size=image_size)
-    text_mask.save("text_mask.png")
-    print("Text mask saved as text_mask.png")
+    save_image(text_mask, "text_mask.png", label="Text mask")
 
     print("Generating image...")
     generator = torch.Generator(device=device).manual_seed(args.seed)
@@ -161,15 +132,13 @@ def main():
     )
 
     output_image = output.images[0]
-    output_image.save(args.output)
-    print(f"Image saved as {args.output}")
+    save_image(output_image, args.output, label="Image")
 
     # Small version where the hidden text becomes visible.
     small_image = output_image.resize((128, 128), Image.Resampling.LANCZOS)
     stem = args.output.rsplit(".", 1)[0]
     small_filename = f"{stem}_small.png"
-    small_image.save(small_filename)
-    print(f"Small version saved as {small_filename}")
+    save_image(small_image, small_filename, label="Small version")
 
     print("\nDone! View the small version to see the hidden text.")
 
