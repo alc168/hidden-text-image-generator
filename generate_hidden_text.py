@@ -7,9 +7,10 @@ viewed at small sizes or from a distance.
 
 import torch
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
-from PIL import Image, ImageDraw, ImageFont
-import numpy as np
+from PIL import Image, ImageDraw
 from controlnet_aux import CannyDetector
+
+from utils import get_device_and_dtype, load_font, save_image
 
 
 def create_text_mask(text, size=(512, 512), font_size=120):
@@ -21,13 +22,7 @@ def create_text_mask(text, size=(512, 512), font_size=120):
     text = text.upper()
     
     # Try to use a bold font, fall back to default if not available
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size, index=1)  # Bold variant
-    except:
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except:
-            font = ImageFont.load_default()
+    font = load_font(font_size)
     
     # Calculate text position to center it
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -57,12 +52,9 @@ def main():
     
     print("Loading models...")
     
-    # Move to GPU if available
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Move to GPU if available, using float16 on GPU and float32 on CPU
+    device, torch_dtype = get_device_and_dtype()
     print(f"Using device: {device}")
-    
-    # Use float16 only on GPU, float32 on CPU
-    torch_dtype = torch.float16 if device == "cuda" else torch.float32
     
     # Load ControlNet model (using Canny edge detection for text embedding)
     controlnet = ControlNetModel.from_pretrained(
@@ -86,15 +78,13 @@ def main():
     print("Creating text mask...")
     # Create text mask
     text_mask = create_text_mask(text, size=image_size)
-    text_mask.save("text_mask.png")
-    print("Text mask saved as text_mask.png")
+    save_image(text_mask, "text_mask.png", label="Text mask")
     
     print("Processing with ControlNet...")
     # Use Canny detector to get edges from text mask
     canny = CannyDetector()
     control_image = canny(text_mask, low_threshold=50, high_threshold=100)
-    control_image.save("control_image.png")
-    print("Control image saved as control_image.png")
+    save_image(control_image, "control_image.png", label="Control image")
     
     print("Generating image...")
     # Generate the image
@@ -115,15 +105,13 @@ def main():
     # Save the result
     output_image = output.images[0]
     output_filename = "jeremy_hidden_landscape.png"
-    output_image.save(output_filename)
-    print(f"Image saved as {output_filename}")
+    save_image(output_image, output_filename, label="Image")
     
     # Also save a smaller version to test visibility
     small_size = (128, 128)
     small_image = output_image.resize(small_size, Image.Resampling.LANCZOS)
     small_filename = "jeremy_hidden_landscape_small.png"
-    small_image.save(small_filename)
-    print(f"Small version saved as {small_filename}")
+    save_image(small_image, small_filename, label="Small version")
     
     print("\nDone! View the small version to see the hidden text.")
 
