@@ -101,11 +101,14 @@ def main():
     print(f"Using device: {device}")
 
     print("Loading models...")
-    controlnet = ControlNetModel.from_pretrained(CONTROLNET_ID, torch_dtype=torch_dtype)
+    controlnet = ControlNetModel.from_pretrained(
+        CONTROLNET_ID, torch_dtype=torch_dtype, use_safetensors=True
+    )
     pipe = StableDiffusionControlNetPipeline.from_pretrained(
         BASE_MODEL_ID,
         controlnet=controlnet,
         torch_dtype=torch_dtype,
+        use_safetensors=True,
     )
     pipe = pipe.to(device)
 
