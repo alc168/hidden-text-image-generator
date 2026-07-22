@@ -9,6 +9,7 @@ is shrunk or viewed from a distance / with squinted eyes.
 """
 
 import argparse
+import logging
 import sys
 
 import torch
@@ -17,6 +18,8 @@ from PIL import Image, ImageDraw
 
 from utils import get_device_and_dtype, load_font, save_image
 
+
+logger = logging.getLogger(__name__)
 
 # Model ids. runwayml/stable-diffusion-v1-5 was removed from the Hub in 2024,
 # so we use the community-maintained mirror.
@@ -98,25 +101,36 @@ def main():
     image_size = (args.size, args.size)
 
     device, torch_dtype = get_device_and_dtype()
-    print(f"Using device: {device}")
+    logger.info("Using device: %s", device)
 
-    print("Loading models...")
-    controlnet = ControlNetModel.from_pretrained(CONTROLNET_ID, torch_dtype=torch_dtype)
-    pipe = StableDiffusionControlNetPipeline.from_pretrained(
-        BASE_MODEL_ID,
-        controlnet=controlnet,
-        torch_dtype=torch_dtype,
-    )
+    # Load ControlNet + Stable Diffusion models. Downloading/loading these can
+    # fail for many reasons (no network, out of disk, corrupt cache); surface a
+    # clear, actionable error instead of a raw stack trace deep in diffusers.
+    logger.info("Loading models...")
+    try:
+        controlnet = ControlNetModel.from_pretrained(CONTROLNET_ID, torch_dtype=torch_dtype)
+        pipe = StableDiffusionControlNetPipeline.from_pretrained(
+            BASE_MODEL_ID,
+            controlnet=controlnet,
+            torch_dtype=torch_dtype,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to load the ControlNet/Stable Diffusion models. Check your "
+            "network connection, available disk space, and the Hugging Face "
+            "model cache."
+        ) from exc
+
     pipe = pipe.to(device)
 
     # Attention slicing lowers peak memory; useful on CPU and low-VRAM GPUs.
     pipe.enable_attention_slicing()
 
-    print("Creating text mask...")
+    logger.info("Creating text mask...")
     text_mask = create_text_mask(args.text, size=image_size)
     save_image(text_mask, "text_mask.png", label="Text mask")
 
-    print("Generating image...")
+    logger.info("Generating image...")
     generator = torch.Generator(device=device).manual_seed(args.seed)
 
     output = pipe(
@@ -131,6 +145,9 @@ def main():
         width=image_size[0],
     )
 
+    if not output.images:
+        raise RuntimeError("Pipeline returned no images; generation failed.")
+
     output_image = output.images[0]
     save_image(output_image, args.output, label="Image")
 
@@ -140,8 +157,21 @@ def main():
     small_filename = f"{stem}_small.png"
     save_image(small_image, small_filename, label="Small version")
 
-    print("\nDone! View the small version to see the hidden text.")
+    logger.info("Done! View the small version to see the hidden text.")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.error("Interrupted by user.")
+        sys.exit(130)
+    except Exception:
+        # Log the full traceback and exit non-zero so failures propagate to the
+        # caller / shell instead of being masked by a zero exit status.
+        logger.exception("Image generation failed.")
+        sys.exit(1)

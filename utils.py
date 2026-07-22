@@ -1,7 +1,11 @@
 """Shared utilities for the hidden text image generator."""
 
+import logging
+
 import torch
 from PIL import ImageFont
+
+logger = logging.getLogger(__name__)
 
 # Font paths tried in order, first match wins. Each entry is (path, index).
 DEFAULT_FONT_CANDIDATES = (
@@ -16,14 +20,17 @@ DEFAULT_FONT_CANDIDATES = (
 def load_font(font_size, candidates=DEFAULT_FONT_CANDIDATES):
     """Load the first available scalable font from ``candidates``.
 
-    Raises if none can be loaded, because Pillow's default bitmap font ignores
-    ``font_size`` and produces an unusably tiny mask.
+    Each candidate is tried in order; the specific font-loading error is logged
+    so that a fallback is never silent. Raises if none can be loaded, because
+    Pillow's default bitmap font ignores ``font_size`` and produces an unusably
+    tiny mask.
     """
     for path, index in candidates:
         try:
             return ImageFont.truetype(path, font_size, index=index)
-        except OSError:
-            continue
+        except OSError as exc:
+            logger.warning("Could not load font '%s': %s", path, exc)
+
     raise RuntimeError(
         "Could not load a scalable TrueType font. Install DejaVu "
         "(e.g. `apt-get install fonts-dejavu`) or provide a font available on this system."
@@ -31,9 +38,12 @@ def load_font(font_size, candidates=DEFAULT_FONT_CANDIDATES):
 
 
 def save_image(image, filename, label="Image"):
-    """Save ``image`` to ``filename`` and print a confirmation."""
-    image.save(filename)
-    print(f"{label} saved as {filename}")
+    """Save ``image`` to ``filename``, raising a clear error if the write fails."""
+    try:
+        image.save(filename)
+    except OSError as exc:
+        raise OSError(f"Failed to save {label.lower()} '{filename}': {exc}") from exc
+    logger.info("%s saved as %s", label, filename)
 
 
 def get_device_and_dtype():
